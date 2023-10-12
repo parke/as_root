@@ -36,7 +36,7 @@ I wrote `as_root` because `btrfs` (and other commands) provide status informatio
 
 Patterns are stored in the `ALLOW` string.  The `ALLOW` string is compiled into `as_root`.  There is no configuration file.
 
-Patterns are separated by the newline character (`'\n'`).  Arguments in a patteren are separated by one or more spaces (`' '`).
+Patterns are separated by the newline character (`'\n'`).  Arguments within a patteren are separated by one or more spaces (`' '`).
 
 There are three special arguments that may be used in a pattern:
 
