@@ -2,40 +2,62 @@
 
 //  as_root.c  -  An ultra-minimalist alternative to sudo.
 //
-//  Copyright (c) 2023 Parke Bostrom, parke.nexus at gmail.com
+//  Copyright (c) 2024 Parke Bostrom, parke.nexus at gmail.com
 //  Distributed under GPLv3 (see end of file) WITHOUT ANY WARRANTY.
 
 
-//  as_root.c  version  20231012
+//  as_root.c  version  20240717
 
 
-#include  <stdio.h>     //  fprintf, snprintf
-#include  <stdlib.h>    //  exit
-#include  <string.h>    //  strspn
-#include  <unistd.h>    //  getuid, setuid
+#include  <stdbool.h>    //  bool  true  false
+#include  <stdio.h>      //  printf  fprintf  snprintf
+#include  <stdlib.h>     //  exit
+#include  <string.h>     //  strcmp  strspn  strstr
+#include  <unistd.h>     //  getgid  getuid  setgid  setuid
 
 
 typedef  const int     cint;    //  ---------------------------  typedef  cint
 typedef  const char *  str;     //  ----------------------------  typedef  str
 
 
+
+
+static void  usage  ()  {    //  --------------------------------------  usage
+  printf
+    (  "\n"
+       "usage:  as_root  command  [arg ...]\n"  );  }
+
+//  end  usage  --------------------------------------------------  end  usage
+
+
+
+
 static str  ALLOW  =    //  -----------------------------------  global  ALLOW
 
   "btrfs  subv  list  PLUS  \n"
+  "cryptsetup  luksDump  ARG  \n"
+  "id  \n"
+  "id  -a  -a\n"
 
   ;    //  end  global  ALLOW  ---------------------------  end  global  ALLOW
 
 
+
+
+//  mutable global variables  ----------------------  mutable global variables
+
+static bool   as_root;    //  process was invoked as "as_root"?
+static str *  argv;       //  points to command in argv_main[].
+static str *  arg;        //  walks from argv[1] to argv[n].
+static str    p;          //  walks through each line of ALLOW.
+static int    p_n;        //  the length of the current token in ALLOW.
+
+//  end  mutable global variables  ------------  end  mutable global variables
+
+
+
+
 //  lib  ----------------------------------------------------------------  lib
-
-
-/*  20231011  xray() is used during debugging.
-static void  xray  ( str m, str * argv )  {    //  ---------------------  xray
-  fprintf ( stderr, "%s", m );
-  for     (  ;  * argv;  argv ++ )
-  {       fprintf  ( stderr, "%s  ", * argv );  }
-  fprintf ( stderr, "\n" );  }
-*/
 
 
 static str  basename  ( str path )  {    //  -----------------------  basename
@@ -43,30 +65,42 @@ static str  basename  ( str path )  {    //  -----------------------  basename
   return  p  ?  p+1  :  path  ;  }
 
 
-static int  die  ( str m )  {    //  ------------------------------------  die
+static bool  die  ( str m )  {    //  -----------------------------------  die
   fprintf ( stderr, "as_root  fatal error  %s\n", m );
   exit ( 1 );  }
 
 
-static void  do_exec  ( str argv[] )  {    //  ----------------------  do_exec
+static void  do_exec  ()  {    //  ----------------------------------  do_exec
 
-  str   PATH[]     =  {  "/usr/bin",  "/usr/sbin",  "/bin",  "/sbin",
+  str  envp[]  =  { NULL };    //  use an empty environment.
+
+  if(  as_root  &&  strstr ( argv[0], "/" )  )
+  {    //  PATH search is unnecessary.  exec argv without change.
+       execve ( argv[0], (char**) argv, (char**) envp );
+       die("execve");  return;  }    //  die on failure.
+
+  //  PATH search is necessary.
+  str   PATH[]    =  {  "/usr/bin",  "/usr/sbin",  "/bin",  "/sbin",
                           NULL  };
-  str   filename   =  basename ( argv[0] );
-  char  buf[80];
+  str   filename  =  basename ( argv[0] );
+  char  buf[80];    //  hopefully 80 bytes is enough.
+  for(  str * p2  =  PATH;  * p2;  p2 ++ )
+  {     cint  n   =  snprintf ( buf, sizeof buf, "%s/%s", * p2, filename );
+        if(  n > ( (int) sizeof buf ) - 5  )    //  5 is an approximation.
+        {    die("snprintf");  }                //  snprintf overflow
+        argv[0]   =  buf;
+        execve ( argv[0], (char**) argv, (char**) envp );  }
 
-  for  (  str * p  =  PATH;  * p;  p ++ )
-  {    cint  n     =  snprintf ( buf, sizeof buf, "%s/%s", * p, filename );
-       n > ( sizeof buf ) - 5  &&  die("snprintf");    //  overflow
-       argv[0]     =  buf;
-       execv ( argv[0], (char**) argv );  }
-
-  die ( "exec" );  }
+  die ( "execve" );  }
 
 
 static void  drop  ()  {    //  ----------------------------------------  drop
-  setgid ( getgid() )  &&  die("setgid");
-  setuid ( getuid() )  &&  die("setuid");  }
+  if(  setgid ( getgid() )  )  {  die("setgid");  }
+  if(  setuid ( getuid() )  )  {  die("setuid");  }  }
+
+
+static bool  is_equal  ( str a, str b )  {    //  ------------------  is_equal
+  return  strcmp ( a, b ) == 0;  }
 
 
 static str  skip_one  ( str p, cint c )  {    //  ------------------  skip_one
@@ -81,86 +115,101 @@ static str  skip_to  ( str p, str accept )  {    //  ----------------  skip_to
   return  p  ?  p + strcspn ( p, accept )  :  p  ;  }
 
 
+//  end  lib  ------------------------------------------------------  end  lib
+
+
+
+
 //  match  ------------------------------------------------------------  match
 
 
-static str *  argv;    //  -------------------------------------  global  argv
-static str *  arg;     //  -------------------------------------  global  arg
-static str    p;       //  -------------------------------------  global  p
-static int    pn;      //  -------------------------------------  global  pn
+static bool  is_arg    ()  {  return  * arg  ?  1  :  0  ;  }    //  -  is_arg
+static bool  not_arg   ()  {  return  !  is_arg();  }    //  --------  not_arg
+static bool  p_is_eol  ()  {  return  p_n == 0;  }    //  ----------  p_is_eol
 
 
-/*  20231011  p_xray() is used during debugging.
-static void  p_xray  ( str m, str m2 )  {    //  ---------------------  p_xray
-  char  buf[80];
-  memcpy ( buf, p, pn );
-  buf [ pn ]  =  '\0';
-  fprintf ( stderr, "%s  %d  '%s'  %s\n", m, pn, buf, m2 );  }
-*/
-
-
-static int  p_is  ( str s )  {    //  ----------------------------------  p_is
-  //  p_xray ( "p_is", s );    //  20231011
-  if  ( s == NULL )
-  {   return  p == NULL  ||  p[0] == '\0'  ||  p[0] == '\n';  }
-  return  strncmp ( p, s, pn ) == 0;  }
+static bool  p_is  ( str expect )  {    //  ----------------------------  p_is
+  //  return true iff p equals expect.
+  return  strncmp ( p, expect, p_n ) == 0  &&  expect[p_n] == '\0';  }
 
 
 static int  p_len  ()  {    //  ---------------------------------------  p_len
+  //  return the length of the current token.
   return  strcspn ( p, " \n" );  }
 
 
-static int  p_not  ( str s )  {    //  --------------------------------  p_not
-  return  !  p_is(s);  }
-
-
 static void  arg_next  ()  {    //  --------------------------------  arg_next
-  if  ( * arg )  {  arg ++;  }
-  p   =  skip_to   ( p, " \n" );
-  p   =  skip_past ( p, " "   );
-  pn  =  p_len();  }
+  if(  * arg  )  {  arg ++;  }  }
 
 
-static void  line_first  ( str argv_main[] )  {    //  ----------  line_first
-  argv  =  argv_main;
-  arg   =  argv;
-  p     =  ALLOW;
-  pn    =  p_len();  }
+static void  p_next  ()  {    //  ------------------------------------  p_next
+  //  advance p to the next token on the current line.
+  p    =  skip_to   ( p, " \n" );
+  p    =  skip_past ( p, " "   );
+  p_n  =  p_len();  }
 
 
-static void  line_next  ()  {    //  ------------------------------  line_next
-  arg  =  argv;
+static void  p_next_line  ()  {    //  --------------------------  p_next_line
+  //  advance p to the beginning of the next line.
   p    =  skip_to  ( p, "\n" );
   p    =  skip_one ( p, '\n' );
-  pn   =  p_len();  }
+  p_n  =  p_len();  }
 
 
-static int  is_match  ()  {    //  ---------------------------------  is_match
+static bool  line_match  ()  {    //  -----------------------------  line_match
+  //  return true iff p accepts argv.
+  for(   arg  =  argv;
+	 true;
+	 arg_next(), p_next()  )  {
+    if(  p_is_eol()                 )  {  return  not_arg();  }
+    if(  not_arg()                  )  {  return  false;  }
+    if(  p_is("STAR")               )  {  return  true;  }
+    if(  p_is("PLUS")               )  {  return  is_arg();  }
+    if(  p_is("ARG")  &&  is_arg()  )  {  continue;  }
+    if(  p_is(*arg)                 )  {  continue;  }
+    return  false;  }  }
 
-  if  ( p_not ( basename ( * arg ) ) )  {  return  0;  }
 
-  loop  :
-  arg_next();
-  if  ( * arg == NULL )  {  return  p_is(NULL)  ||  p_is("STAR");  }
-  if  ( p_is("PLUS")  )  {  return  1;   }
-  if  ( p_is("STAR")  )  {  return  1;   }
-  if  ( p_is("ARG")   )  {  goto  loop;  }
-  if  ( p_is(*arg)    )  {  goto  loop;  }
+//  end  match  --------------------------------------------------  end  match
 
-  return  0;  }
+
 
 
 //  main  --------------------------------------------------------------  main
 
 
-void  main  ( cint argc, str argv[] )  {    //  ------------------------  main
-  for  (  line_first(argv);  * p;  line_next()  )
-  {    if  ( is_match ()  )
-       {   do_exec ( argv );  }  }
+static void  init  ( str argv_main[] )  {    //  -----------------------  init
 
-  //  xray ( "as_root  DROP  ", argv );    //  20231011
+  p          =  ALLOW;
+  p_n        =  p_len();
+  argv       =  argv_main;    //  assume
+  as_root    =  is_equal ( basename ( argv[0] ), "as_root" );
+
+  if(  as_root  )
+  {    argv  =  argv_main + 1;  }  }
+
+
+int  main  ( cint argc, str argv_main[] )  {    //  -------------------  main
+
+  init ( argv_main );
+
+  if(  as_root  &&  argc == 1 )  {  usage();  exit(1);  }
+
+  for(  ;  * p;  p_next_line()  )
+  {     if(  line_match ()  )
+        {    do_exec();          //  do_exec() should never return.
+             return  1;  }  }    //  we should never get here.
+
+  if(   as_root  )
+  {     die("match failed.");  }
+
   drop();
-  do_exec ( argv );  }
+  do_exec();       //  do_exec() should never return.
+
+  return  1;  }    //  we should never get here.
+
+
+//  end  main  ----------------------------------------------------  end  main
 
 
 
@@ -171,7 +220,7 @@ void  main  ( cint argc, str argv[] )  {    //  ------------------------  main
 
 //  as_root.c  -  An ultra-minimalist alternative to sudo.
 //
-//  Copyright (c) 2023 Parke Bostrom, parke.nexus at gmail.com
+//  Copyright (c) 2024 Parke Bostrom, parke.nexus at gmail.com
 //
 //  This program is free software: you can redistribute it and/or
 //  modify it under the terms of version 3 of the GNU General Public
