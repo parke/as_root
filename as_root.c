@@ -34,6 +34,15 @@ static void  usage  ()  {    //  --------------------------------------  usage
 
 static str  ALLOW  =    //  -----------------------------------  global  ALLOW
 
+  //  In explicit mode:  If the specified command matches one of the
+  //  below patterns, then as_root will execute the command.  If no
+  //  pattern matches, then as_root will exit with a status of 1.
+
+  //  In implicit (i.e. symlink) mode:  If the specified command
+  //  matches one of the below patterns, then as_root will simply
+  //  execute the command.  If no pattern matches, then as_root will
+  //  first drop priviledges and then execute the command.
+
   "btrfs  subv  list  PLUS  \n"
   "cryptsetup  luksDump  ARG  \n"
   "id  \n"
@@ -46,11 +55,11 @@ static str  ALLOW  =    //  -----------------------------------  global  ALLOW
 
 //  mutable global variables  ----------------------  mutable global variables
 
-static bool   as_root;    //  process was invoked as "as_root"?
-static str *  argv;       //  points to command in argv_main[].
-static str *  arg;        //  walks from argv[1] to argv[n].
-static str    p;          //  walks through each line of ALLOW.
-static int    p_n;        //  the length of the current token in ALLOW.
+static bool   explicit;    //  true iff as_root was invoked explicitly.
+static str *  cmd;         //  the command (and arguments) to execute.
+static str *  arg;         //  walks from cmd[0] to cmd[n].
+static str    p;           //  walks through each line of ALLOW.
+static int    p_n;         //  the length of the current token in ALLOW.
 
 //  end  mutable global variables  ------------  end  mutable global variables
 
@@ -74,22 +83,22 @@ static void  do_exec  ()  {    //  ----------------------------------  do_exec
 
   str  envp[]  =  { NULL };    //  use an empty environment.
 
-  if(  as_root  &&  strstr ( argv[0], "/" )  )
-  {    //  PATH search is unnecessary.  exec argv without change.
-       execve ( argv[0], (char**) argv, (char**) envp );
+  if(  explicit  &&  strstr ( cmd[0], "/" )  )
+  {    //  PATH search is unnecessary.  exec cmd without change.
+       execve ( cmd[0], (char**) cmd, (char**) envp );
        die("execve");  return;  }    //  die on failure.
 
   //  PATH search is necessary.
   str   PATH[]    =  {  "/usr/bin",  "/usr/sbin",  "/bin",  "/sbin",
                           NULL  };
-  str   filename  =  basename ( argv[0] );
+  str   filename  =  basename ( cmd[0] );
   char  buf[80];    //  hopefully 80 bytes is enough.
   for(  str * p2  =  PATH;  * p2;  p2 ++ )
   {     cint  n   =  snprintf ( buf, sizeof buf, "%s/%s", * p2, filename );
         if(  n > ( (int) sizeof buf ) - 5  )    //  5 is an approximation.
         {    die("snprintf");  }                //  snprintf overflow
-        argv[0]   =  buf;
-        execve ( argv[0], (char**) argv, (char**) envp );  }
+        cmd[0]   =  buf;
+        execve ( cmd[0], (char**) cmd, (char**) envp );  }
 
   die ( "execve" );  }
 
@@ -157,8 +166,8 @@ static void  p_next_line  ()  {    //  --------------------------  p_next_line
 
 
 static bool  line_match  ()  {    //  -----------------------------  line_match
-  //  return true iff p accepts argv.
-  for(   arg  =  argv;
+  //  return true iff p accepts cmd.
+  for(   arg  =  cmd;
 	 true;
 	 arg_next(), p_next()  )  {
     if(  p_is_eol()                 )  {  return  not_arg();  }
@@ -178,29 +187,25 @@ static bool  line_match  ()  {    //  -----------------------------  line_match
 //  main  --------------------------------------------------------------  main
 
 
-static void  init  ( str argv_main[] )  {    //  -----------------------  init
-
-  p          =  ALLOW;
-  p_n        =  p_len();
-  argv       =  argv_main;    //  assume
-  as_root    =  is_equal ( basename ( argv[0] ), "as_root" );
-
-  if(  as_root  )
-  {    argv  =  argv_main + 1;  }  }
+static void  init  ( str argv[] )  {    //  ----------------------------  init
+  explicit  =  is_equal ( basename ( argv[0] ), "as_root" );
+  cmd       =  argv + ( explicit ? 1 : 0 );    //  skip "as_root"
+  p         =  ALLOW;
+  p_n       =  p_len();  }
 
 
-int  main  ( cint argc, str argv_main[] )  {    //  -------------------  main
+int  main  ( cint argc, str argv[] )  {    //  -------------------------  main
 
-  init ( argv_main );
+  init ( argv );
 
-  if(  as_root  &&  argc == 1 )  {  usage();  exit(1);  }
+  if(   explicit  &&  argc == 1  )  {  usage();  exit(1);  }
 
-  for(  ;  * p;  p_next_line()  )
-  {     if(  line_match ()  )
-        {    do_exec();          //  do_exec() should never return.
-             return  1;  }  }    //  we should never get here.
+  for(  ;  * p;  p_next_line()  )    //  for each line in ALLOW.
+  {     if(  line_match ()  )        //  if the line accepts cmd.
+        {    do_exec();              //    do_exec() should never return.
+             return  1;  }  }        //    we should never get here.
 
-  if(   as_root  )
+  if(   explicit  )
   {     die("match failed.");  }
 
   drop();
