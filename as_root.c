@@ -97,7 +97,7 @@ static void  do_exec  ()  {    //  ----------------------------------  do_exec
   {     cint  n   =  snprintf ( buf, sizeof buf, "%s/%s", * p2, filename );
         if(  n > ( (int) sizeof buf ) - 5  )    //  5 is an approximation.
         {    die("snprintf");  }                //  snprintf overflow
-        cmd[0]   =  buf;
+        cmd[0]    =  buf;
         execve ( cmd[0], (char**) cmd, (char**) envp );  }
 
   die ( "execve" );  }
